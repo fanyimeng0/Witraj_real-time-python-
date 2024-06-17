@@ -1,182 +1,146 @@
-import multiprocessing
-import time
-from process import process
-import os
+import threading
 import socket
-
-
-import csiread
+import pickle
 import numpy as np
-
 import matplotlib.pyplot as plt
-import time
-from IPython.display import display, clear_output
+import matplotlib.animation as animation
+from matplotlib.animation import FuncAnimation
+import matplotlib.pyplot as plt
+import numpy as np
+from process import process
 
-    
-def process1(queue1):
-    # Save csi to queue 1
-    SIZE_BUFFER = 3600
-    HZ = 800
-    TIME = 20000
-    NUM_TOTAL = HZ * TIME
-
-    socket.NETLINK_CONNECTOR = 11
-    CN_NETLINK_USERS = 11
-    CN_IDX_IWLAGN = CN_NETLINK_USERS + 0xF
-    NETLINK_ADD_MEMBERSHIP = 1
-    Ntx = 1
-    Nrx = 3
-    Nsub = 30
-
-    while True:
-        csidata = csiread.Intel(None, Nrx, Ntx)
-        count = 0
-        with socket.socket(
-            socket.AF_NETLINK, socket.SOCK_DGRAM, socket.NETLINK_CONNECTOR
-        ) as s:
-            s.bind((os.getpid(), CN_IDX_IWLAGN))
-            s.setsockopt(270, NETLINK_ADD_MEMBERSHIP, CN_IDX_IWLAGN)
-            while count < NUM_TOTAL:
-                ret = s.recv(SIZE_BUFFER)
-                # keep nothing but data part
-                cnmsg_data = ret[36:]
-                # parse data using csiread.Intel.pmsg
-                # only requires data bytes, omitting any other bytes
-                csi_i = None
-                status = csidata.pmsg(cnmsg_data)
-                # csi from one packet
-                if status == 0xBB:
-                    # 187, status valid, else error
-                    csi_i = csidata.get_scaled_csi()
-                    count += 1
-                    queue1.put(csi_i)
-                    #csi for one sample
-
-                   
-                        
-
-            s.close()
-
-def process2(queue2):
-    #save csi from 10.20.14.28 
-    SIZE_BUFFER = 1440
-    HZ = 800
+cache_len = 1000
+shape = (1,30, 3, 1)
+complex_zero_array = np.zeros(shape, dtype=complex)
+cache_len = 2000
+cache_csi1 = [np.zeros(shape, dtype=complex) for _ in range(cache_len)]
+cache_csi2 = [np.zeros(shape, dtype=complex) for _ in range(cache_len)]
+tx = 3.2 + 0j
+r1 = 0 - 0j
+r2 = 3.2 + 2.7j
+rx = [r1, r2]
+loc_ini_x = 1.8
+loc_ini_y = 1.35
+cache_traj_x = [loc_ini_x]*1000
+cache_traj_y = [loc_ini_y]*1000
 
 
-    socket.NETLINK_CONNECTOR = 11
-    CN_NETLINK_USERS = 11
-    CN_IDX_IWLAGN = CN_NETLINK_USERS + 0xF
-    NETLINK_ADD_MEMBERSHIP = 1
-
-        
-    address_src = ("10.20.14.28", 10086)
-    address_des = ("10.20.14.37", 10010)
-    # 创建socket对象，并绑定IP地址和端口号
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.bind(address_des)
-        while True:
-            csi_L,address_src = s.recvfrom(SIZE_BUFFER)
-            csi = np.frombuffer(csi_L,dtype=np.complex128).reshape((1,30,3,1))
-            #csi = np.frombuffer(csi_L,dtype=np.complex128)
-            queue2.put(csi)
-            #print(csi[0,28,0,0])
-            #csi_reshape = matrixreshape(csi)
-            #print(csi_reshape[28,0])
-        s.close()
+mutex = threading.Lock()
 def matrixreshape(original_array):
     #change the csi shape to 90*time
     length = original_array.shape[0]
     reshaped_array = np.zeros((length, 90), dtype=np.complex128)
-
-    # 将第三维的数据合并到新数组中
     for i in range(3):
         start_idx = i * 30
         end_idx = (i + 1) * 30
-        reshaped_array[:, start_idx:end_idx] = original_array[:, :, i, 0]
+        reshaped_array[:, start_idx:end_idx] = original_array[ :,:, i]
     
     return reshaped_array.T
+class GetDataThread(threading.Thread):
+    def __init__(self, device, ip='0.0.0.0', port1=10010,port2=10020):
+        super(GetDataThread, self).__init__()
+        self.ip = ip
+        self.port1 = port1
+        self.port2 = port2
+        # 如果需要根据设备类型初始化不同的设置
+        self.device = device
 
-def plotall(input_array,input_array1,input_array2):
-    fig = plt.figure(figsize=(8, 8))
-    gs = GridSpec(3, 1, figure=fig, height_ratios=[2, 1, 1])
-    ax = fig.add_subplot(gs[0, 0])
+    def run(self):
+        thread1 = threading.Thread(target=self.rx1)
+        thread2 = threading.Thread(target=self.rx2)
+        thread1.start()
+        thread2.start()
 
 
-    ax1 = fig.add_subplot(gs_bottom[0, 0])
-    ax2 = fig.add_subplot(gs_bottom[0, 1])
+    def rx1(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind((self.ip, self.port1))  # 绑定到指定的IP和端口
 
-    for i in range(100,len(input_array)):
-        clear_output(wait=True)
-        y = input_array[i-100:i]
-        ax.plot(np.real(y),np.imag(y), color='r')
-        ax.set_xlim(-1,4)
-        ax.set_ylim(-1,7)
+            while True:
+                count = 0
+                data, addr = sock.recvfrom(4096)  # 接收数据
+                csi = pickle.loads(data)  # 反序列化数据
+                mutex.acquire()
+                cache_csi1.pop(0)
+                cache_csi1.append(csi)
+                mutex.release()
 
-        ax.set_title('Trajectory')
-        y1 = input_array1[i-100:i-50]
-        y2 = input_array2[i-100:i-50]
+                # 假设receive_data是一个numpy数组，这里打印特定的数据点
+                #print(receive_data[:, 10, 1, 0])
+    
+    def rx2(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind((self.ip, self.port2))  # 绑定到指定的IP和端口
+            count = 0
+            while True:
+                
+                data, addr = sock.recvfrom(4096)  # 接收数据
+                csi = pickle.loads(data)  # 反序列化数据
+                msg_len = len(csi)
+                mutex.acquire()
+                cache_csi2.pop(0)
+                cache_csi2.append(csi)
+                mutex.release()
+                count += 1   
+                if count % 2000 == 0:
+                    loc_ini = cache_traj_x[-1]+cache_traj_y[-1]*1j
+                    mutex.acquire()
+                    #print(cache_csi1[0].shape)
+                    merged_csi1=np.squeeze(np.stack(cache_csi1,axis=0))
+                    merged_csi2=np.squeeze(np.stack(cache_csi2,axis=0))
+                
+                    csi_1 = matrixreshape(merged_csi1)
+                    csi_2 = matrixreshape(merged_csi2)
+                    loc = process(csi_1,csi_2,1000,loc_ini,tx,rx)
+                    print(loc[-1])
+                    length = len(loc)
+                    for i in range (0,length):
+                        cache_traj_x.pop(0)
+                        cache_traj_x.append(loc[i].real)
+                        cache_traj_y.pop(0)
+                        cache_traj_y.append(loc[i].imag)
+                    mutex.release()  
 
-        ax1.plot(np.real(y1),np.imag(y1), color='y')
-        ax2.plot(np.real(y2),np.imag(y2), color='b')
-        ax1.set_title('CSI Slope Rx1')
-        ax2.set_title('CSI Slope Rx2')
-        gs.tight_layout(fig)
 
-        display(fig)
+# 动态绘制(x, y)点的函数
+def realtime_traj():
+    fig, ax = plt.subplots()
+    plt.title('Wifi Trajectory')
+    plt.xlabel('X(m)')
+    plt.ylabel('Y(m)')
+    line1, = ax.plot([], [])
 
-        display(fig)
+    tx_x = [3.2]
+    tx_y = [0]
+    rx_x = [0, 3.2]
+    rx_y = [0, 2.7]
+    init_x = [1.5]
+    init_y = [1.2]
+    ax.plot(tx_x, tx_y, 'x')
+    ax.plot(rx_x, rx_y, 'o')
+    ax.plot(init_x, init_y, 'x', color='r')
+    ax.set_aspect('equal') 
+    
 
-        # 延时一段时间
-        time.sleep(0.005)
+    def init():
+        ax.set_xlim(-3,5)
+        ax.set_ylim(-2,8)
+        return line1,
 
-        ax.clear()
-        ax1.clear()
-        ax2.clear()
+    def animate(i):
+        global cache_traj_x,cache_traj_y,mutex
+        mutex.acquire()
+        line1.set_data(cache_traj_x,cache_traj_y)
+        mutex.release()
+        return line1,
+    
+    ani =FuncAnimation(fig, animate, init_func=init, interval=1000/25, blit=True)
+    plt.show()
 
-       
 
+def realtime_plot(device):
+    task1 = GetDataThread(device)
+    task1.start()
+    realtime_traj()
 if __name__ == '__main__':
-    queue1 = multiprocessing.Queue()
-    queue2 = multiprocessing.Queue()
-    p1 = multiprocessing.Process(target=process1, args=(queue1,))
-    p2 = multiprocessing.Process(target=process2, args=(queue2,))
-    
-    p1.start()
-    p2.start()
-       
-    tx = 1 + 2j
-    r1 = 0 + 0j
-
-    # r2=3+0i
-    r2 = 3 + 0j
-    rx = [r1, r2]
-    loc_ini = 0+1.5j
-    csi_1 = []
-    csi_2 = []
-    while True:
-        while len (csi_1)<2400:
-            data1 = queue1.get()
-            csi_data1 = matrixreshape(data1)
-            csi_1.append(csi_data1)
-            data2 =  queue2.get()
-            csi_data2 = matrixreshape(data2)
-            csi_2.append(csi_data2)
-        csi_d1=np.concatenate(csi_1,axis=1)
-        csi_d2=np.concatenate(csi_2,axis=1)
-        #print(csi_d1.shape)
-        csi_1=csi_1[-1000:]
-        csi_2=csi_2[-1000:]
-
-        print(loc_ini)
-        [loc,ne1,ne2] = process(csi_d1,csi_d2,800,loc_ini)
-        print(loc.shape)
-        loc_ini = loc[-1]
-        
-        plotall(loc,ne1,ne2)
-        
-        
-    
-        plt.grid(True)
-
-
-        
+    realtime_plot('intel')

@@ -5,79 +5,47 @@ import numpy as np
 import cmath
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
+import csiread
+from csilib import getcsi
 
 
-def process(csi_data1, csi_data2, samp_rate, loc_ini):
-    lambda_ = 3e8 / 5.24e9
+# 下面是原始的savgol_filter函数代码，包括savgol_coeffs和其他相关函数...
+# 请在此处插入原始函数的其余部分
 
-    # tx=0+0i
-    tx = 1 + 2j
-
+def process(csi_data1, csi_data2, samp_rate, loc_ini,tx,rx):
+    lambda_ = 3e8 / 5.18e9
     time_length = csi_data1.shape[1]
     time = np.zeros(time_length)
     for i in range(0, time_length):
         time[i] = 1 / samp_rate * i
-
-    # r1=2.8+0i
-    r1 = 0 + 0j
-
-    # r2=3+0i
-    r2 = 3 + 0j
-
-    # initpoint=0.5-0.5i
     initpoint = loc_ini
-
-    rx = [r1, r2]  # three RXs
-
-    # read CSI data
-
-    # cut three CSI data to the same length
-    # [pc1, pc2, pc3, time] = align_time3(time1, time2, time3, pc1, pc2, pc3)
-
-    samp_rate = samp_rate
-
-    pc1 = csi_data1
-    pc2 = csi_data2
-
-    skip_silence = 1.4
-
+    skip_silence = 1
     # get Doppler frequency shift (in Hz)
-    speed1, score1, slope, duslope, mrange, ne1 = mimo2speed(pc1, samp_rate)
-    speed2, score2, slope, duslope, mrange, ne2 = mimo2speed(pc2, samp_rate)
-   #plotPolarColor(ne1,'CSI Quotient Slope RX 1')
+    speed1, score1, slope, duslope, mrange, ne1 = mimo2speed(csi_data1, samp_rate)
+    speed2, score2, slope, duslope, mrange, ne2 = mimo2speed(csi_data2, samp_rate)
+    #plotPolarColor(ne1,'CSI Quotient Slope RX 1')
     #plotPolarColor(ne2,'CSI Quotient Slope RX 2')
-    
-    
-    
-
     # [speed3, score3] = mimo2speed(pc3, samp_rate)
     # convert to speed (in m/s)
     movespeed1 = speed1 * lambda_
-
     movespeed2 = speed2 * lambda_
     new_length = min(movespeed2.size, movespeed1.size)
-
     # 调整数组长度
     movespeed2 = np.resize(movespeed2, new_length)
     movespeed1 = np.resize(movespeed1, new_length)
     new_length = min(score2.size, score1.size)
-
     # 调整数组长度
     score2 = np.resize(score2, new_length)
     score1 = np.resize(score1, new_length)
-
     # movespeed3 = speed3 * lambda_
     speed = np.vstack((movespeed1, movespeed2)).T
-
     score = np.vstack((score1, score2)).T
-
     # for data plot purpose
     index = np.argmin(score, axis=1)
     len_ = score.shape[0]
     sel1 = np.zeros((len_, 1), dtype=bool)
     sel2 = np.zeros((len_, 1), dtype=bool)
     sel3 = np.zeros((len_, 1), dtype=bool)
-
     for i in range(len_):
         if np.ceil(index[i]) == 1:
             sel1[i] = True
@@ -85,26 +53,18 @@ def process(csi_data1, csi_data2, samp_rate, loc_ini):
             sel2[i] = True
         if np.ceil(index[i]) == 3:
             sel3[i] = True
-
     # calculate skip
     skip = math.floor(skip_silence * samp_rate)
     if skip < 1:
         skip = 1
-
     # slice speed and score arrays
-    speed = speed[skip:-150, :]
-    score = score[skip:-150, :]
+    speed = speed[1:-1, :]
+    score = score[1:-1, :]
     # print(speed)
-
-
-
     # calculate trajectory
     loc = trajectory_by_doppler_v3(speed, score, np.diff(time), initpoint, tx, rx, 10)
 
-
-
-
-    return loc,ne1,ne2
+    return loc
 
     # overlap groundtruth
     # plt.plot(np.real(groundtruth), np.imag(groundtruth), '--', color='red')
@@ -112,10 +72,10 @@ def process(csi_data1, csi_data2, samp_rate, loc_ini):
 
 def mimo2speed(rx, samp_rate):
     # get CSI ratio from raw CSI input
-    csiq = getAntMIMO(rx, 2, 3)
+    csiq = getAntMIMO(rx, 1, 2)
 
-    speed_high, score_high, agree_high, slope, duslope, mrange, ne = windowd_speed(csiq, samp_rate, 40)
-    speed_low, score_low, agree_low = windowd_speed(csiq, samp_rate, 25)[:3]
+    speed_high, score_high, agree_high, slope, duslope, mrange, ne = windowd_speed(csiq, samp_rate, 14)
+    speed_low, score_low, agree_low = windowd_speed(csiq, samp_rate, 14)[:3]
     speed = np.vstack((speed_high, speed_low))
     score_in = -np.vstack((agree_high, agree_low))
 
@@ -128,6 +88,7 @@ def mimo2speed(rx, samp_rate):
     return dopplerspeed, score, slope, duslope, mrange, ne
 
 
+
 def getAntMIMO(rx, ant1, ant2):
     length = rx.shape[1]
     rx1 = rx[(1 - 1) * 30:1 * 30, 0:length]
@@ -137,29 +98,35 @@ def getAntMIMO(rx, ant1, ant2):
     r1 = m_removecomplexzero(rx1)
     r2 = m_removecomplexzero(rx2)
     r3 = m_removecomplexzero(rx3)
-
-    x = np.arange(1, len(r1) + 1)
-
-    r1avg = np.nanmean(np.abs(r1))
-    r2avg = np.nanmean(np.abs(r2))
-    r3avg = np.nanmean(np.abs(r3))
+    r1avg = np.mean(np.abs(r1))
+    r2avg = np.mean(np.abs(r2))
+    r3avg = np.mean(np.abs(r3))
     level = [r1avg, r2avg, r3avg]
 
-    if level[ant1 - 1] > level[ant2 - 1]:
+
+    # r1avg = np.nanmean(np.abs(r1))
+    # r2avg = np.nanmean(np.abs(r2))
+    # r3avg = np.nanmean(np.abs(r3))
+    # level = [r1avg, r2avg, r3avg]
+
+    if level[ant1 - 1] < level[ant2 - 1]:
         maxIndex = ant1
         minIndex = ant2
+        ret = np.divide(r1 , r2)
     else:
         maxIndex = ant2
         minIndex = ant1
+        ret = np.divide(r2 , r1)
 
-    # print('level = ', level)
-    # print('r', minIndex, '/r', maxIndex, ', r', minIndex, '/r', maxIndex)
-    if minIndex == 1:
-        ret = rx1 / rx3
-    else:
-        ret = rx3 / rx1
-    denominator = maxIndex
-
+    print('level = ', level)
+    print('r', minIndex, '/r', maxIndex, ', r', minIndex, '/r', maxIndex)
+    #if minIndex == 1:
+    #    ret = rx1 / rx3
+    #else:
+    #    ret = rx3 / rx1
+    #denominator = maxIndex
+    
+    
     # fill nan position in the stream
 
     # append nan endings with the last non-nan data
@@ -183,7 +150,38 @@ def m_removecomplexzero(r):
     r[mask] = 0.1 + 0.1j
     return r
 
-
+def interpolateComplexInf(inputArray):
+    # 确保输入是一个列向量
+    if not np.isscalar(inputArray) and len(inputArray.shape) > 1:
+        raise ValueError('Input must be a vector.')
+    
+    # 分别找到实部和虚部中 Inf 或 -Inf 的索引
+    infIndicesReal = np.where(np.isinf(inputArray.real))[0]
+    infIndicesImag = np.where(np.isinf(inputArray.imag))[0]
+    
+    # 获取数组的有效索引（非 Inf 和非 NaN），分别对实部和虚部
+    validIndicesReal = np.where(~np.isinf(inputArray.real) & ~np.isnan(inputArray.real))[0]
+    validIndicesImag = np.where(~np.isinf(inputArray.imag) & ~np.isnan(inputArray.imag))[0]
+    
+    # 检查是否有足够的非 Inf/NaN 点进行插值
+    if len(validIndicesReal) < 2 or len(validIndicesImag) < 2:
+        raise ValueError('Not enough non-Inf and non-NaN points in either the real or imaginary parts to perform interpolation.')
+    
+    # 创建输出数组，初始时等于输入数组
+    output = np.copy(inputArray)
+    
+    # 分别对实部和虚部的 Inf 位置进行插值
+    if infIndicesReal.size > 0:
+        interpFuncReal = interp1d(validIndicesReal, inputArray.real[validIndicesReal], kind='linear', fill_value='extrapolate')
+        interpolatedValuesReal = interpFuncReal(infIndicesReal)
+        output[infIndicesReal] = interpolatedValuesReal + 1j * output[infIndicesReal].imag
+    
+    if infIndicesImag.size > 0:
+        interpFuncImag = interp1d(validIndicesImag, inputArray.imag[validIndicesImag], kind='linear', fill_value='extrapolate')
+        interpolatedValuesImag = interpFuncImag(infIndicesImag)
+        output[infIndicesImag] = output[infIndicesImag].real + 1j * interpolatedValuesImag
+    
+    return output
 def windowd_speed(csiq, samp_rate, window_size):
     timeslot = 6 / window_size  # 0.05 before modification
     wsize = int(np.floor(timeslot * samp_rate))
@@ -191,6 +189,7 @@ def windowd_speed(csiq, samp_rate, window_size):
     window_size = window_size * samp_rate / 400
 
     ncsi = np.mean(csiq, axis=0)
+    ncsi = interpolateComplexInf(ncsi)
     len_ncsi = len(ncsi)
 
     for i in range(3):
@@ -242,6 +241,7 @@ def windowd_speed(csiq, samp_rate, window_size):
     dopplerspeed = movmean(dopplerspeed, wsize / 2)
 
     score = -mrange / window_size
+
     agree = agree / score
 
     return dopplerspeed.flatten(), score.flatten(), agree, slope, duslope, mrange, ne
@@ -297,33 +297,38 @@ def movmean(datas, k):
 
 def m_denoise_w(x, winsize):
     """
-    Signal denoising using Savitzky-Golay smoothing.
-    Args:
-        x (ndarray): Input signal.
-        winsize (float): Window size for smoothing.
+    Signal denoise using Savitzky-Golay smoothing.
+    
+    Parameters:
+    x : array_like
+        The input signal.
+    winsize : int
+        The length of the window, should be a positive odd integer.
+    
     Returns:
-        ndarray: Denoised signal.
+    ret : ndarray
+        The denoised signal.
     """
-    # Check input length
+    
+    # Check the length of the input signal
     len_x = len(x)
     if len_x < 30:
         return x
-
-    # Set polynomial order and window length
-    n = 2
-    f = int(winsize)  # window length (about 1 period)
-
-    # Adjust window length
-    if f > len_x:
-        f = len_x - 2
-    if f % 2 == 0:
-        f += 1  # Make it odd
-
+    
+    # Order of polynomial fit
+    N = 2
+    
+    # Window size, make sure it's an odd integer and does not exceed the signal length
+    F = int(np.floor(winsize))
+    if F > len_x:
+        F = len_x - 2
+    if F % 2 == 0:
+        F += 1  # Make it odd
+    
     # Apply Savitzky-Golay filter
-    ret = savgol_filter(x, f, n)
+    ret = savgol_filter(x, F, N,mode='mirror')
+    
     return ret
-
-
 def trajectory_by_doppler_v3(move_speed, score, deltaT, initPos, Tx, Rx, window):
     # get trajectory from Doppler speeds
     # input: move_speed Doppler speeds of Rx
@@ -345,6 +350,7 @@ def trajectory_by_doppler_v3(move_speed, score, deltaT, initPos, Tx, Rx, window)
     #deltaT = np.hstack(([0], deltaT))
     curPos = initPos
     min_score = np.argmin(score, axis=1)
+    loc_list=[]
     for i in range(seg):
         s = window * i + 1
         e = s + window - 1
@@ -371,14 +377,14 @@ def trajectory_by_doppler_v3(move_speed, score, deltaT, initPos, Tx, Rx, window)
         #         if (abs(newPos) != abs(1+1j)):
         #             print('stop here')
         Loc[i] = curPos
-
+        loc_list.append(curPos)
         v[i] = (newPos - curPos) / deltaT[i]
-        if ~np.isnan(newPos):
-            curPos = newPos
+        #print(f"The velocity is{v[i]/window}")
+        if v[i]<100:
+            curPos = (newPos-curPos)*1+curPos
         LocT[i] = np.sum(deltaT[s:e])
     LocT = np.cumsum(LocT)
-    return Loc
-
+    return loc_list
 
 def getnormaldir(tx, rx, pos):
     # this function return the normal vector based on the location of tx, rx,
@@ -393,7 +399,6 @@ def getnormaldir(tx, rx, pos):
     if abs(tx - pos_x) + abs(rx - pos_x) < abs(p1) + abs(p2):
         normal_dir = normal_dir + np.pi
     return normal_dir
-
 
 def gethumanspeed(pos, doppler_dir, doppler_move):
     if sum(abs(doppler_move)) == 0:
@@ -410,127 +415,114 @@ def gethumanspeed(pos, doppler_dir, doppler_move):
     return newpos
 
 
-def get_scaled_csi(csi_st):
-    # Pull out CSI
-    csi = csi_st['csi']
-
-    # Calculate the scale factor between normalized CSI and RSSI (mW)
-    csi_sq = csi * np.conj(csi)
-    csi_pwr = np.sum(csi_sq)
-    rssi_pwr = dbinv(get_total_rss(csi_st))
-    # Scale CSI -> Signal power : rssi_pwr / (mean of csi_pwr)
-    scale = rssi_pwr / (csi_pwr / 30)
-
-    # Thermal noise might be undefined if the trace was
-    # captured in monitor mode.
-    # ... If so, set it to -92
-    if csi_st['noise'] == -127:
-        noise_db = -92
-    else:
-        noise_db = csi_st['noise']
-    thermal_noise_pwr = dbinv(noise_db)
-
-    # Quantization error: the coefficients in the matrices are
-    # 8-bit signed numbers, max 127/-128 to min 0/1. Given that Intel
-    # only uses a 6-bit ADC, I expect every entry to be off by about
-    # +/- 1 (total across real & complex parts) per entry.
-    #
-    # The total power is then 1^2 = 1 per entry, and there are
-    # Nrx*Ntx entries per carrier. We only want one carrier's worth of
-    # error, since we only computed one carrier's worth of signal above.
-    quant_error_pwr = scale * (csi_st['Nrx'] * csi_st['Ntx'])
-
-    # Total noise and error power
-    total_noise_pwr = thermal_noise_pwr + quant_error_pwr
-
-    # Ret now has units of sqrt(SNR) just like H in textbooks
-    ret = csi * np.sqrt(scale / total_noise_pwr)
-    if csi_st['Ntx'] == 2:
-        ret = ret * np.sqrt(2)
-    elif csi_st['Ntx'] == 3:
-        # Note: this should be sqrt(3)~ 4.77 dB. But, 4.5 dB is how
-        # Intel (and some other chip makers) approximate a factor of 3
-        #
-        # You may need to change this if your card does the right thing.
-        ret = ret * np.sqrt(dbinv(4.5))
-    return ret
+def matrixreshape(original_array):
+    #change the csi shape to 90*time
+    length = original_array.shape[0]
+    reshaped_array = np.zeros((length, 90), dtype=np.complex128)
+    for i in range(3):
+        start_idx = i * 30
+        end_idx = (i + 1) * 30
+        reshaped_array[:, start_idx:end_idx] = original_array[ :,i, :]
+    return reshaped_array.T
+if __name__ == '__main__':
 
 
-def get_total_rss(csi_st):
-    # Careful here: rssis could be zero
-    rssi_mag = 0
-    if csi_st['rssi_a'] != 0:
-        rssi_mag += dbinv(csi_st['rssi_a'])
-    if csi_st['rssi_b'] != 0:
-        rssi_mag += dbinv(csi_st['rssi_b'])
-    if csi_st['rssi_c'] != 0:
-        rssi_mag += dbinv(csi_st['rssi_c'])
+# # Linux 802.11n CSI Tool
+#     csifile = "line-1.dat"
+#     # csidata = csiread.Intel(csifile, nrxnum=3, ntxnum=1)
+#     # csidata.read()
+#     csi = getcsi(csifile)  
+#     print(csi.shape)
+#     data1 = matrixreshape(np.squeeze(csi))
 
-    ret = np.log10(rssi_mag) * 10 - 44 - csi_st['agc']
-    return ret
-
-
-def m_normTime(ts):
-    dt = np.diff(ts) / 1000000
-    mm = np.logical_or(dt > 1, dt < 0)
-    if np.sum(mm) > 0:
-        dt[mm] = np.mean(dt[~mm])
-    t = np.concatenate(([0], np.cumsum(dt)))
-    mm = np.concatenate(([0], (dt == 0)))
-    if np.sum(mm) > 0:
-        idx = np.arange(len(ts))
-        t = np.interp(idx, idx[~mm], t[~mm])
-
-    return t
+#     csifile = "line-2.dat"
+#     # csidata = csiread.Intel(csifile, nrxnum=3, ntxnum=1)
+#     # csidata.read()
+#     csi = getcsi(csifile)   
+#     data2 = matrixreshape(np.squeeze(csi))
 
 
-def dbinv(x):
-    return np.power(10, x / 10)
+#     # dataFile1 = 's-1'
+#     # dataread1 = scio.loadmat(dataFile1)
+#     # data1 = dataread1['csi_data'].T
+
+#     # dataFile2 = 'shun2-2'
+#     # dataread2 = scio.loadmat(dataFile2)
+#     # data2 = dataread2['csi_data'].T
+#     # print(data1.shape[1])
+
+#     # #data1 = data1[:,:2000]
+#     # #data2 = data2[:, :2000]
+#     # print(data1.shape)
+#     tx = 0 + 0j
+#     r1 = 0 - 5.6j
+#     r2 = 2.7 + 0j
+#     rx = [r1, r2]
+#     loc_ini = 2.2 -6.25j
+  
+
+#     loc=process(data1,data2,1000,loc_ini,tx,rx)
+#     #loc = savgol_filter(loc,10,2)
 
 
-import matplotlib.pyplot as plt
-import numpy as np
-
-
-def plotPolarColor(x, caption):
-    # 绘制标题
-    plt.title(caption)
-
-    # 计算数据点数量和颜色映射
-    n = len(x)
-    colors = plt.cm.jet(np.linspace(0, 1, n))
-    print("Traj Number",n)
-
-    # 绘制第一个数据点
-
-    # 绘制剩余的数据点
-    for i in range(1, n):
-        plt.plot(np.real(x[i]), np.imag(x[i]), '.', color=colors[i])
-        
+#     n = len(loc)
+#     fig, ax = plt.subplots()
+#     for i in range(1,n):
+#         ax.plot(np.real(loc[i]), np.imag(loc[i]), '.')
     
 
-    # 设置坐标轴范围
-    plt.xlim((-2, 4))
-    plt.ylim((0, 6))
+#     ax.set_aspect("equal")
+#     plt.show()
+
+    csifile = "test-1.dat"
+    csidata = csiread.Intel(csifile, nrxnum=3, ntxnum=1)
+    csidata.read()
+    csi = csidata.get_scaled_csi()
+    #csi = getcsi(csifile)  
+    print(csi.shape)
+    data1 = matrixreshape(np.transpose(np.squeeze(csi), (0, 2, 1)))
+
+    csifile = "test-2.dat"
+    csidata = csiread.Intel(csifile, nrxnum=3, ntxnum=1)
+    csidata.read()
+    csi = csidata.get_scaled_csi()
+    #csi = getcsi(csifile)     
+    data2 = matrixreshape(np.transpose(np.squeeze(csi), (0, 2, 1)))
+
+
+    # dataFile1 = 's-1'
+    # dataread1 = scio.loadmat(dataFile1)
+    # data1 = dataread1['csi_data'].T
+
+    # dataFile2 = 'shun2-2'
+    # dataread2 = scio.loadmat(dataFile2)
+    # data2 = dataread2['csi_data'].T
+    # print(data1.shape[1])
+
+    # #data1 = data1[:,:2000]
+    # #data2 = data2[:, :2000]
+    # print(data1.shape)
+    tx = 3.2 + 0j
+    r1 = 0 - 0j
+    r2 = 3.2 + 2.7j
+    rx = [r1, r2]
+    loc_ini = 1.6 + 1.35j
+  
+
+    loc=process(data1,data2,1000,loc_ini,tx,rx)
+    #loc = savgol_filter(loc,10,2)
+
+
+    n = len(loc)
+    fig, ax = plt.subplots()
+    for i in range(1,n):
+        ax.plot(np.real(loc[i]), np.imag(loc[i]), '.')
+    
+
+    ax.set_aspect("equal")
     plt.show()
+    
 
 
+    
 
-
-
-if __name__ == '__main__':
-    dataFile1 = 'shun2-1'
-    dataread1 = scio.loadmat(dataFile1)
-    data1 = dataread1['csi_data'].T
-
-    dataFile2 = 'shun2-2'
-    dataread2 = scio.loadmat(dataFile2)
-    data2 = dataread2['csi_data'].T
-    print(data1.shape[1])
-
-    #data1 = data1[:,:2000]
-    #data2 = data2[:, :2000]
-    print(data1.shape)
-
-
-    process(data1, data2,400,loc_ini=0.25+1j)
