@@ -2,7 +2,7 @@
 
  This is a repo for python-based real-time Wi-Fi tracking by using Intel 5300. The algorithm is forked from https://github.com/Soccerene/WiTraj
 
-##### How to Run this code
+## How to Run this code
 
 Before using this code, make sure you have configured the driver correctly. 
 
@@ -27,5 +27,5 @@ If you want to verify the tracking algorithm's performance, run process.py, you 
 
 The real_time tracking performance like this:
 
- 
+ ![Real-time tracking ](wifisensing.gif)
 
